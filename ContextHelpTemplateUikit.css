@@ -1,0 +1,47 @@
+
+.AdminThemeDefault #content .WireTabs #_AdminHelpTabHelp:hover,
+.AdminThemeDefault #content .WireTabs #_ProcessPageEditHelpModal:hover  {
+  color: #fff !important;
+}
+
+.AdminThemeUikit ul#PageEditTabs li.helpLink {
+  position: absolute;
+  right:0;
+}
+
+.AdminThemeUikit ul#PageEditTabs li.offscreen {
+	visibility: hidden;
+}
+
+.help-doc {
+	padding-bottom: 20px;
+	margin-bottom: 20px;
+	border-bottom: 1px dotted #ccc;
+}
+
+.help-doc h1 i {
+	color: #5CC7B2;
+	font-size: 28px !important;
+}
+
+.help-doc h1 span a i {
+	color: #4bc100;
+	font-size: 18px !important;
+}
+
+.help-doc div.doc-edit {
+	float:right;
+	font-size:.95em;
+}
+
+.mfp-inline-holder .mfp-content {
+	/*max-width: 900px;*/
+	margin: 40px auto;
+}
+
+.mfp-content li {
+	display: block !important;
+}
+
+
+

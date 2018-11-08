@@ -1,0 +1,484 @@
+<?php
+
+/**
+ * Context Help for Templates
+ * ====================================
+ *
+ * @author Macrura
+ * @copyright Macrura
+ *
+ * ProcessWire 2.x, 3.x
+ * Copyright (C) 2011 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://www.processwire.com
+ *
+ */
+
+class ContextHelpTemplate extends WireData implements Module, ConfigurableModule {
+
+	/**
+	 * getModuleInfo is a module required by all modules to tell ProcessWire about them
+	 *
+	 * @return array
+	 *
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Context Help for Templates',
+			'version' => 100,
+			'summary' => 'Assign context-based content specific templates.',
+			'author' => 'Macrura',
+			'singular' => true,
+			'autoload' => true,
+			'icon' => 'info-circle',
+			//'requires'  => 'ProcessWire>=2.8.0, PHP>=5.4',
+			'requires' => array('FieldtypeTemplates'),
+		);
+	}
+
+
+	/**
+	 * Data as used by the get/set functions
+	 *
+	 */
+	protected $data = array();
+
+
+	protected static $configDefaults = array(
+		'c_help_enabled_tpls'	=> '', // which templates are allowed to have help
+		'c_help_tpl_select' 	=> '', // the template select field, using FieldtypeTemplates
+		'c_help_template' 		=> '', // the template to search for content, like "help-doc"
+		'c_help_field'			=> '', // the content field on the template, like "body"
+
+		// button prefs
+		'tab_title' 	=> '', // default Help
+		'tab_icon'		=> '', // default life-ring
+		'tab_color'		=> '#5CC7B2', // blue
+		'display_type' 	=> 'tab', // tab, modal, offscreen, drop
+		'display_width' => '', // for offscreen or modal
+		
+		'title_prefs'	=> 'icon_text',
+		'use_colorpicker' => 0,
+	);
+
+
+	/**
+	 * Set our configuration defaults
+	 * 
+	 */
+	public function __construct() {
+		foreach(self::$configDefaults as $key => $value) {
+			$this->set($key, $value); 
+		}
+
+	}
+
+
+	/**
+	 * ready() is called when both PW's API is ready and $page object is initialized (for autoload modules!)
+	 * Add the hook here to be able to skip it based on the template of the edited page.
+	 *
+	 */
+	public function ready() {
+
+        $config = $this->wire('config');
+        $root = $config->urls->siteModules . 'AdminOnSteroids';
+        $styles = $config->styles;
+        $scripts = $config->scripts;
+        $moduleInfo = static::getModuleInfo();
+
+		$this->className = __CLASS__;
+
+        // if there's only the default admin theme, $user->admin_theme is not available
+        $this->adminTheme = $this->user->admin_theme ? $this->user->admin_theme : $this->config->defaultAdminTheme;
+
+		if(wire('page')->process != 'ProcessPageEdit') return;
+		$id = (int)$this->input->get('id');
+		if(!$id) return;
+		$this->editedPage = wire('pages')->get($id);
+		if($this->editedPage->template->flags & Template::flagSystem) return;
+
+		if(count($this->c_help_enabled_tpls) == 0 or
+		   in_array($this->editedPage->template->name, $this->c_help_enabled_tpls)) {
+		
+			$docs = wire('pages')->find("{$this->c_help_tpl_select}={$this->editedPage->template->id}, sort=sort");
+			if(!count($docs)) return;
+
+			$this->addHookAfter('ProcessPageEdit::buildForm', $this, 'hookBuildForm');
+
+			if($this->display_type == 'offcanvas' && $this->adminTheme != "AdminThemeUikit") {
+				$this->display_type = 'modal';
+			}
+
+			if($this->display_type == 'modal') {
+				$this->addHookAfter('ProcessPageEdit::getTabs', $this, 'addHelpLinkModal');
+				$this->modules->get('JqueryMagnific');
+			}
+
+			if($this->display_type == 'offcanvas') {
+				$this->addHookAfter('ProcessPageEdit::getTabs', $this, 'addHelpLinkOffcanvas');
+			}
+
+			$config->scripts->add($config->urls->siteModules . $this->className . '/ContextHelpTemplate.js?v=' . time());
+			// custom text styles for non-uikit themes
+			$file = $this->wire('config')->urls->{$this->className} . 'ContextHelpTemplate.css';
+			if($this->adminTheme == 'AdminThemeUikit') {
+				$file = $this->wire('config')->urls->{$this->className} . 'ContextHelpTemplateUikit.css';	
+			}
+			$this->config->styles->append($file);
+
+
+		}
+
+	}
+
+
+	public function hookBuildForm(HookEvent $event) {
+
+		$form = $event->return;
+
+		// create the tab
+		$docTab = new InputfieldWrapper();
+		$docTab->attr('id', $this->className());
+
+		// Tab/Link Title & Color
+		$icon = $this->tab_icon ? "<i class='fa fa-{$this->tab_icon}'></i>" : "<i class='fa fa-life-ring'></i> ";
+		$label = $this->tab_title ?: $this->_('Help');
+
+		$tabTitle = $label;
+		if($this->title_prefs == 'icon_text') $tabTitle = $icon . ' ' . $label;
+		if($this->title_prefs == 'icon_only') $tabTitle = $icon;
+		if($this->title_prefs == 'text_only') $tabTitle = $label;
+
+		$docTab->attr('title', $tabTitle);
+		$docTab->attr('data-color', $this->tab_color);
+
+		// tab content
+		$field = $this->modules->get("InputfieldMarkup");
+
+		// find docs
+		$docs = wire('pages')->find("{$this->c_help_tpl_select}={$this->editedPage->template->id}, sort=sort");
+
+		if(count($docs)) {
+
+			$body = '<div id="docs">';
+
+			foreach($docs as $doc) {
+				
+				$body .= "<div id='doc{$doc->id}' class='help-doc'>";
+				$body .= "<h1><i class='fa fa-file-text-o'></i> {$doc->title}";
+				$body .= " &nbsp;<span><a href='{$doc->editUrl}' target='_blank' title='Edit'><i class='fa fa-pencil'></i></a></span></h1>";
+				$body .= $doc->{$this->c_help_field};
+
+				$body .= '<div class="doc-edit">';
+				$body .= "<a href='{$doc->editUrl}' target='_blank'><i class='fa fa-pencil'></i> Edit: {$doc->title}</a></div>";
+				$body .= '</div>';
+
+			}
+			$body .= '</div>';
+
+			if($this->adminTheme == "AdminThemeUikit" && $this->display_type == "offcanvas") {
+
+			$width = $this->display_width ? : 600;
+
+			$body =	"<div id='ContextHelpTemplateOffcanvas' uk-offcanvas>
+						<div class='uk-offcanvas-bar' style='width:{$width}px;'>
+							<button class='uk-offcanvas-close' type='button' uk-close></button>
+							$body
+						</div>
+					</div>";
+			}
+
+			$field->markupText = $body;
+
+		} else {
+			$field->markupText = "<h2>No applicable help docs found</h2>";
+		}
+
+		// append the markup to the tab and the tab to the form
+		$docTab->append($field);
+		$form->prepend($docTab);
+
+
+	}
+
+	/**
+	 * Add Modal Help Link to Page Editor
+	 *
+	 */
+	public function addHelpLinkModal(HookEvent $event) {
+		$tabs = $event->return;
+		$event->replace = true;
+
+		// SETTINGS
+		$icon = $this->tab_icon ? "<i class='fa fa-{$this->tab_icon}'></i>" : "<i class='fa fa-life-ring'></i>";
+		$label = $this->tab_title ?: $this->_('Help');
+		$style = $this->tab_color ? " style='color:{$this->tab_color}'" : " style='color:#5CC7B2'";
+		$width = $this->display_width ? " data-mfp-width='{$this->display_width}'" : '';
+		
+		$tabTitle = $label;
+		if($this->title_prefs == 'icon_text') $tabTitle = $icon . ' ' . $label;
+		if($this->title_prefs == 'icon_only') $tabTitle = $icon;
+		if($this->title_prefs == 'text_only') $tabTitle = $label;
+		//-----
+
+		$id = $this->className() . 'HelpModal';
+		$url = '#ContextHelpTemplate';
+
+		$a = "<a id='_ProcessPageEditHelpModal' href='$url' title='Open help in modal'{$style}{$width}>{$tabTitle}</a>";
+		$tabs[$id] = $a;
+		$event->return = $tabs;
+	}
+
+
+	/**
+	 * Add Modal Help Link to Page Editor
+	 *
+	 */
+	public function addHelpLinkOffcanvas(HookEvent $event) {
+		$tabs = $event->return;
+		$event->replace = true;
+
+		// SETTINGS
+		$icon = $this->tab_icon ? "<i class='fa fa-{$this->tab_icon}'></i>" : "<i class='fa fa-life-ring'></i>";
+		$label = $this->tab_title ?: $this->_('Help');
+		$style = $this->tab_color ? " style='color:{$this->tab_color}'" : " style='color:#5CC7B2'";
+		
+		$tabTitle = $label;
+		if($this->title_prefs == 'icon_text') $tabTitle = $icon . ' ' . $label;
+		if($this->title_prefs == 'icon_only') $tabTitle = $icon;
+		if($this->title_prefs == 'text_only') $tabTitle = $label;
+		//-----
+
+		$id = $this->className() . 'HelpModal';
+		$url = '#ContextHelpTemplateOffcanvas';
+
+		$a = "<a id='_ProcessPageEditHelpOffcanvas' href='$url' title='Open help'{$style} uk-toggle>{$tabTitle}</a>";
+		$tabs[$id] = $a;
+		$event->return = $tabs;
+	}
+
+
+    public static function getFormattedOptionName($obj) {
+        return !empty($obj->label) ? $obj->label . ' (' . $obj->name . ')' : $obj->name;
+    }
+
+	/**
+	 * Module configuration screen
+	 * ============================================================
+	 */
+	public function getModuleConfigInputfields(array $data) {
+
+		foreach(self::$configDefaults as $key => $value) {
+			if(!isset($data[$key])||$data[$key]=="") $data[$key] = $value;
+		}
+
+		unset($data['cacheClear']);
+		$inputfields = new InputfieldWrapper();
+
+        // Which templates should we allow context help on?
+        // ------------------------------------------------------------------------
+		$f = wire('modules')->get('InputfieldAsmSelect');
+		$f->attr('name+id', 'c_help_enabled_tpls');
+		$f->label = __('Restrict templates', __FILE__);
+		$f->description = __('"Help" icon will be restricted to those chosen below. Leave unset to show help on any template.', __FILE__);
+		$f->attr('title', __('Restrict templates', __FILE__));
+		$f->setAsmSelectOption('sortable', false);
+
+		foreach(wire('templates') as $t) {
+			if(!($t->flags & Template::flagSystem)) $f->addOption($t->name);
+		}
+		if(isset($data['c_help_enabled_tpls'])) $f->value = $data['c_help_enabled_tpls'];
+		$f->columnWidth = 50;
+		$inputfields->add($f); 
+
+        // Field to use for Template Reference, e.g. "template_select"
+        // ------------------------------------------------------------------------
+        $tpl_fields = wire('fields')->find('type=FieldtypeTemplates');
+        if (count($tpl_fields) > 0) {
+            $f              = wire('modules')->get('InputfieldSelect');
+            $f->name        = 'c_help_tpl_select';
+            $f->label       = __('Template Field', __FILE__);
+            $f->description = __('This is the field you will use to specify which template to show the page\'s content on.', __FILE__);
+            foreach ($tpl_fields as $tpl_field) {
+                $f->addOption($tpl_field->name, self::getFormattedOptionName($tpl_field));
+            }
+
+            if ($data[ $f->name ]) {
+                $f->attr('value', $data[ $f->name ]);
+            }
+        } else {
+            // add info that no URL type fields are available
+            $f        = wire('modules')->get('InputfieldMarkup');
+            $f->name  = 'no_tpl_fields';
+            $f->label = __('Template fields', __FILE__);
+            $f->markupText = __('There are no template fields (FieldtypeTemplate) available to use for connecting page content to templates.', __FILE__);
+        }
+		$f->columnWidth = 50;
+		$inputfields->add($f); 
+
+		// Template to search in selector, e.g. "help-doc"
+		// ------------------------------------------------------------------------
+		$f = wire('modules')->get('InputfieldSelect');
+		$f->attr('name+id', 'c_help_template');
+		$f->label = __('Help Content Template (basic-page, help-doc etc.)', __FILE__);
+		$f->description = __('Select the template to use in the selector for finding the help content.', __FILE__);
+
+		// populate with all available templates
+		foreach(wire('templates') as $t) {
+			// filter out system templates
+			if(!($t->flags & Template::flagSystem)) $f->addOption($t->name);
+		}
+		
+		if($data[ $f->name ]) $f->attr('value', $data[ $f->name ]);
+		//if(isset($data['c_help_template'])) $f->value = $data['c_help_template'];
+		$f->columnWidth = 50;
+		$inputfields->add($f); 
+
+
+		// Content Field, e.g. "body"
+		// ------------------------------------------------------------------------
+		$ta_fields = wire('fields')->find('type=FieldtypeTextarea');
+		if (count($ta_fields) > 0) {
+			$f              = wire('modules')->get('InputfieldSelect');
+			$f->name        = 'c_help_field';
+			$f->label       = __('Content Field', __FILE__);
+			$f->description = __('Please specify which field to use for the help content.', __FILE__);
+			foreach ($ta_fields as $ta_field) {
+				$f->addOption($ta_field->name, self::getFormattedOptionName($ta_field));
+			}
+
+			if ($data[ $f->name ]) {
+				$f->attr('value', $data[ $f->name ]);
+			}
+		} else {
+			// add info that no URL type fields are available
+			$f        = wire('modules')->get('InputfieldMarkup');
+			$f->name  = 'no_ta_fields';
+			$f->label = __('Textarea fields', __FILE__);
+			$f->markupText = __('There are no textarea fields (FieldtypeTextarea) available to use for field descriptions.', __FILE__);
+		}
+		$f->columnWidth = 50;
+		$inputfields->add($f); 
+
+
+		// ---- TITLE PREFS ---- //
+		$f = wire('modules')->get('InputfieldRadios'); 
+		$f->attr('name', __('title_prefs'));
+		$f->addOption(__('text_only'),"Text Only", ($data['title_prefs']=='text_only')?array('selected'=>'selected'):null);
+		$f->addOption(__('icon_only'),"Icon Only", ($data['title_prefs']=='icon_only')?array('selected'=>'selected'):null); 
+		$f->addOption(__('icon_text'),"Icon + Text", ($data['title_prefs']=='icon_text')?array('selected'=>'selected'):null); 
+		$f->label = __('Title Preferences'); 
+		$f->columnWidth = 25;
+		$inputfields->add($f);
+
+
+		// ---- TAB TITLE ---- //
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'tab_title');
+		$f->attr('value', $data['tab_title']);
+		$f->attr('size', 20);
+		$f->attr('maxlength', 21);
+		$f->attr('placeholder', 'Help');
+		$f->label = __('Help Tab Title');
+		$f->description = __('You can override the tab title.');
+		$f->columnWidth = 25;
+		$inputfields->add($f);
+
+		// ---- TAB COLOR ---- //
+		// if($this->wire('modules')->isInstalled("InputfieldColor")) {
+		// 	$f = wire('modules')->get('InputfieldColor');
+		// 	$f->attr('name', 'tab_color');
+		// 	//$f->attr('inputType', 0);
+		// 	bd($data['tab_color']);
+		// 	$f->attr('value', $data['tab_color']);
+		// 	$f->label = __('Tab Text/Icon Color');
+		// 	$f->description = __('The color to use for the tab text.'); 
+		// 	$f->columnWidth = 50;
+		// 	$inputfields->add($f);
+		// } else {
+		// 	$f = wire('modules')->get('InputfieldText');
+		// 	$f->attr('name', 'tab_color');
+		// 	$f->attr('value', $data['tab_color']); 
+		// 	$f->attr('placeholder', '#5CC7B2');
+		// 	$f->label = __('Hex Color Value');
+		// 	$f->description = __('The color to use for the tab text.'); 
+		// 	$f->columnWidth = 50;
+		// 	$inputfields->add($f);
+		// }
+
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'tab_color');
+		$f->attr('value', $data['tab_color']); 
+		$f->attr('placeholder', '5CC7B2');
+		$f->label = __('Hex Color Value');
+		$f->description = __('The color to use for the tab text.'); 
+		$f->columnWidth = 25;
+		$inputfields->add($f);
+
+		// ---- TAB ICON ---- //
+		$f = wire('modules')->get('InputfieldText');
+		$f->attr('name', 'tab_icon');
+		$f->attr('value', $data['tab_icon']); 
+		$f->attr('placeholder', 'life-ring');
+		$f->label = __('FontAwesome Icon Name');
+		$f->description = __('You can enter a valid FontAwesome icon to use next to the tab.'); 
+		$f->columnWidth = 25;
+		$inputfields->add($f);
+
+		// ---- NO ICON ---- //
+		// $f = wire('modules')->get('InputfieldCheckbox'); 
+		// $f->attr('name', 'no_icon');
+		// $f->attr('value', 1); 
+		// if($data['no_icon']) $f->attr('checked', 'checked'); 
+		// $f->label = __('Disable Tab Icon');
+		// $f->description = __('By befault an icon is shown. Check this box to disable the display of the icon.');
+		// $f->columnWidth = 50;
+		// $inputfields->add($f); 
+
+
+		// ---- DISPLAY TYPE ---- //
+		// $f = wire('modules')->get('InputfieldCheckbox');
+		// $f->attr('name', 'use_modal');
+		// $f->label2 = 'Pop It Up!';
+		// $f->label = __('Display Help in Popup?', __FILE__);
+		// $f->description = __('Check to show help in a popup (lightbox) instead of inside tab content.', __FILE__);
+		// $f->value = (isset($data['use_modal'])) ? $data['use_modal'] : 1;
+		// $f->checked = ($f->value == 1) ? 'checked' : '';
+		// $f->columnWidth = 50;
+		// $inputfields->add($f);
+
+
+		// ---- DISPLAY TYPE ---- //
+		$f = wire('modules')->get('InputfieldRadios'); 
+		$f->attr('name', __('display_type'));
+		$f->addOption(__('tab'),"Tab Content", ($data['display_type']=='tab')?array('selected'=>'selected'):null);
+		$f->addOption(__('modal'),"Lightbox Popup", ($data['display_type']=='modal')?array('selected'=>'selected'):null); 
+		$f->addOption(__('offcanvas'),"Off Canvas (Uikit only, modal for other admin themes).", ($data['display_type']=='offcanvas')?array('selected'=>'selected'):null); 
+		$f->addOption(__('drop'),"Drop Content", ($data['display_type']=='drop')?array('selected'=>'selected'):null); 
+		$f->label = __('Display Preferences'); 
+		$f->columnWidth = 50;
+		$inputfields->add($f);
+
+
+		// ---- DISPLAY WIDTH FOR POP & OFFSCREEN ---- //
+		$f = wire('modules')->get('InputfieldInteger');
+		$f->attr('name', 'display_width');
+		$f->attr('value', $data['display_width']);
+		$f->label = __('Display Max Width');
+		$f->description = __('Max width in px for the lightbox or offscreen content. Leave blank for default width.'); 
+		$f->columnWidth = 50;
+		$inputfields->add($f);
+
+
+		// ------------------------------------------------------------------------
+		return $inputfields;
+
+	}
+
+
+
+
+
+} //
